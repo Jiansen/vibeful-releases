@@ -78,6 +78,12 @@ jobs:
         run: mkdir -p desktop/src-tauri/voice-bin
         shell: bash
 
+      - name: Force build.rs re-run to pick up sidecar resources
+        shell: bash
+        run: |
+          find desktop/src-tauri/target -name ".fingerprint" -path "*/vibeful*" -exec rm -rf {} + 2>/dev/null || true
+          touch desktop/src-tauri/build.rs
+
       - name: TypeScript type check
         working-directory: desktop
         run: npx tsc --noEmit
