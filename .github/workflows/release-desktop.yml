@@ -141,4 +141,5 @@ jobs:
             | Linux (Debian/Ubuntu) | `Vibeful_*_amd64.deb` / `.AppImage` |
           releaseDraft: true
           prerelease: false
+          includeUpdaterJson: true
           args: ${{ matrix.args }}
