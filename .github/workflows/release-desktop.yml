@@ -1,0 +1,144 @@
+name: Release Desktop
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag_name:
+        description: "Release tag (e.g. desktop-v0.1.2)"
+        required: true
+        type: string
+      ref:
+        description: "Git ref to build (commit SHA or branch)"
+        required: true
+        type: string
+
+jobs:
+  build-desktop:
+    name: "Build desktop (${{ matrix.label }})"
+    permissions:
+      contents: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: macos-latest
+            label: macos-arm
+            args: --target aarch64-apple-darwin
+            rust-targets: aarch64-apple-darwin,x86_64-apple-darwin
+          - platform: macos-latest
+            label: macos-intel
+            args: --target x86_64-apple-darwin
+            rust-targets: aarch64-apple-darwin,x86_64-apple-darwin
+          - platform: windows-latest
+            label: windows
+            args: ""
+            rust-targets: ""
+          - platform: ubuntu-22.04
+            label: linux
+            args: ""
+            rust-targets: ""
+    runs-on: ${{ matrix.platform }}
+
+    steps:
+      - name: Checkout private repo
+        uses: actions/checkout@v4
+        with:
+          repository: Jiansen/Vibeful
+          ref: ${{ inputs.ref }}
+          ssh-key: ${{ secrets.VIBEFUL_DEPLOY_KEY }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Install Linux dependencies
+        if: matrix.platform == 'ubuntu-22.04'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf libasound2-dev
+
+      - name: Install desktop deps
+        working-directory: desktop
+        run: npm install
+
+      - name: Build browser sidecar
+        shell: bash
+        run: bash desktop/sidecar-browser/build.sh
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.rust-targets }}
+
+      - name: Rust cache
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: "desktop/src-tauri -> target"
+
+      - name: Prepare voice-bin placeholder
+        run: mkdir -p desktop/src-tauri/voice-bin
+        shell: bash
+
+      - name: TypeScript type check
+        working-directory: desktop
+        run: npx tsc --noEmit
+
+      - name: Verify browser sidecar
+        shell: bash
+        run: |
+          SIDECAR="desktop/src-tauri/sidecar"
+          echo "=== Browser sidecar verification ==="
+          NODE_BIN="$SIDECAR/node"
+          [ -f "$SIDECAR/node.exe" ] && NODE_BIN="$SIDECAR/node.exe"
+          if [ ! -f "$NODE_BIN" ]; then
+            echo "Node.js binary not found in sidecar"
+            exit 1
+          fi
+          echo "Node.js: $("$NODE_BIN" --version)"
+          MCP_CLI="$SIDECAR/node_modules/@playwright/mcp/cli.js"
+          if [ ! -f "$MCP_CLI" ]; then
+            echo "Playwright MCP CLI not found"
+            exit 1
+          fi
+          echo "Playwright MCP CLI: present"
+          du -sh "$SIDECAR"
+
+      - name: Import Apple certificate
+        if: runner.os == 'macOS'
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+        run: |
+          CERTIFICATE_PATH=$RUNNER_TEMP/certificate.p12
+          KEYCHAIN_PATH=$RUNNER_TEMP/app-signing.keychain-db
+          echo -n "$APPLE_CERTIFICATE" | base64 --decode -o $CERTIFICATE_PATH
+          security create-keychain -p "actions" $KEYCHAIN_PATH
+          security set-keychain-settings -lut 21600 $KEYCHAIN_PATH
+          security unlock-keychain -p "actions" $KEYCHAIN_PATH
+          security import $CERTIFICATE_PATH -P "$APPLE_CERTIFICATE_PASSWORD" -A -t cert -f pkcs12 -k $KEYCHAIN_PATH
+          security set-key-partition-list -S apple-tool:,apple: -k "actions" $KEYCHAIN_PATH
+          security list-keychain -d user -s $KEYCHAIN_PATH
+
+      - uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+        with:
+          projectPath: desktop
+          tagName: ${{ inputs.tag_name }}
+          releaseName: 'Vibeful ${{ inputs.tag_name }}'
+          releaseBody: |
+            ## Vibeful Desktop ${{ inputs.tag_name }}
+
+            | Platform | File |
+            |----------|------|
+            | macOS Apple Silicon (M1+) | `Vibeful_*_aarch64.dmg` |
+            | macOS Intel | `Vibeful_*_x64.dmg` |
+            | Windows 64-bit | `Vibeful_*_x64-setup.exe` / `.msi` |
+            | Linux (Debian/Ubuntu) | `Vibeful_*_amd64.deb` / `.AppImage` |
+          releaseDraft: true
+          prerelease: false
+          args: ${{ matrix.args }}
