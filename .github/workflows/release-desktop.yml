@@ -73,6 +73,7 @@ jobs:
         uses: swatinem/rust-cache@v2
         with:
           workspaces: "desktop/src-tauri -> target"
+          prefix-key: "v2-sidecar"
 
       - name: Prepare voice-bin placeholder
         run: mkdir -p desktop/src-tauri/voice-bin
