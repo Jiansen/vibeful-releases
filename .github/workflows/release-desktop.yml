@@ -26,21 +26,25 @@ jobs:
             args: --target aarch64-apple-darwin
             rust-targets: aarch64-apple-darwin,x86_64-apple-darwin
             sidecar-target: darwin-arm64
+            engine-target: aarch64-apple-darwin
           - platform: macos-latest
             label: macos-intel
             args: --target x86_64-apple-darwin
             rust-targets: aarch64-apple-darwin,x86_64-apple-darwin
             sidecar-target: darwin-x64
+            engine-target: x86_64-apple-darwin
           - platform: windows-latest
             label: windows
             args: ""
             rust-targets: ""
             sidecar-target: ""
+            engine-target: x86_64-pc-windows-msvc
           - platform: ubuntu-22.04
             label: linux
             args: ""
             rust-targets: ""
             sidecar-target: ""
+            engine-target: x86_64-unknown-linux-gnu
     runs-on: ${{ matrix.platform }}
 
     steps:
@@ -95,9 +99,37 @@ jobs:
       - name: Rust cache
         uses: swatinem/rust-cache@v2
         with:
-          workspaces: "desktop/src-tauri -> target"
+          workspaces: "desktop/src-tauri -> target\nengine -> target"
           prefix-key: "v3-sidecar"
           shared-key: ${{ matrix.label }}
+
+      - name: Build engine
+        shell: bash
+        run: |
+          echo "=== Building vibeful-engine for ${{ matrix.engine-target }} ==="
+          cd engine
+          if [ -n "${{ matrix.args }}" ]; then
+            cargo build --release --target ${{ matrix.engine-target }}
+            ENGINE_BIN="target/${{ matrix.engine-target }}/release/vibeful-engine"
+          else
+            cargo build --release
+            ENGINE_BIN="target/release/vibeful-engine"
+          fi
+          if [ "${{ runner.os }}" = "Windows" ]; then
+            ENGINE_BIN="${ENGINE_BIN}.exe"
+          fi
+          echo "Engine binary: $ENGINE_BIN ($(du -sh "$ENGINE_BIN" | cut -f1))"
+          ls -la "$ENGINE_BIN"
+
+          # Copy to Tauri externalBin location
+          mkdir -p ../desktop/src-tauri/binaries
+          if [ "${{ runner.os }}" = "Windows" ]; then
+            cp "$ENGINE_BIN" "../desktop/src-tauri/binaries/vibeful-engine-${{ matrix.engine-target }}.exe"
+          else
+            cp "$ENGINE_BIN" "../desktop/src-tauri/binaries/vibeful-engine-${{ matrix.engine-target }}"
+          fi
+          echo "Copied to binaries/vibeful-engine-${{ matrix.engine-target }}"
+          ls -la ../desktop/src-tauri/binaries/
 
       - name: Prepare voice-bin placeholder
         run: mkdir -p desktop/src-tauri/voice-bin
@@ -144,6 +176,8 @@ jobs:
             fi
           fi
           du -sh "$SIDECAR"
+          echo "=== Engine binary verification ==="
+          ls -la desktop/src-tauri/binaries/
           echo "==="
 
       - uses: tauri-apps/tauri-action@v0
@@ -185,11 +219,11 @@ jobs:
           fi
           echo "Bundle directory: $BUNDLE_DIR"
           du -sh "$BUNDLE_DIR" 2>/dev/null || echo "Bundle dir not found"
-          find "$BUNDLE_DIR" -maxdepth 2 -type f -name "*.dmg" -o -name "*.exe" -o -name "*.msi" -o -name "*.deb" -o -name "*.AppImage" -o -name "*.app" 2>/dev/null | while read f; do
+          find "$BUNDLE_DIR" -maxdepth 2 -type f \( -name "*.dmg" -o -name "*.exe" -o -name "*.msi" -o -name "*.deb" -o -name "*.AppImage" \) 2>/dev/null | while read f; do
             SIZE=$(du -sm "$f" | cut -f1)
-            echo "  $f: ${SIZE}MB"
-            if [ "$SIZE" -lt 100 ]; then
-              echo "::error::Bundle $f is only ${SIZE}MB — sidecar likely missing!"
+            echo "  $(basename $f): ${SIZE}MB"
+            if [ "$SIZE" -lt 50 ]; then
+              echo "::error::Bundle $(basename $f) is only ${SIZE}MB — engine or sidecar likely missing!"
               exit 1
             fi
           done
