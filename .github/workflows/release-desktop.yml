@@ -25,18 +25,22 @@ jobs:
             label: macos-arm
             args: --target aarch64-apple-darwin
             rust-targets: aarch64-apple-darwin,x86_64-apple-darwin
+            sidecar-target: darwin-arm64
           - platform: macos-latest
             label: macos-intel
             args: --target x86_64-apple-darwin
             rust-targets: aarch64-apple-darwin,x86_64-apple-darwin
+            sidecar-target: darwin-x64
           - platform: windows-latest
             label: windows
             args: ""
             rust-targets: ""
+            sidecar-target: ""
           - platform: ubuntu-22.04
             label: linux
             args: ""
             rust-targets: ""
+            sidecar-target: ""
     runs-on: ${{ matrix.platform }}
 
     steps:
@@ -81,6 +85,7 @@ jobs:
         shell: bash
         env:
           APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          SIDECAR_TARGET: ${{ matrix.sidecar-target }}
         run: bash desktop/sidecar-browser/build.sh
 
       - uses: dtolnay/rust-toolchain@stable
@@ -119,6 +124,7 @@ jobs:
             exit 1
           fi
           echo "Node.js: $("$NODE_BIN" --version)"
+          echo "Node.js arch: $("$NODE_BIN" -e "console.log(process.arch)")"
           MCP_CLI="$SIDECAR/node_modules/@playwright/mcp/cli.js"
           if [ ! -f "$MCP_CLI" ]; then
             echo "Playwright MCP CLI not found"
@@ -129,7 +135,12 @@ jobs:
           if [ -d "$BROWSERS" ]; then
             echo "Bundled browsers: $(du -sh "$BROWSERS" | cut -f1)"
           else
-            echo "WARNING: No bundled browsers"
+            TARBALL="$SIDECAR/.local-browsers.tar.gz"
+            if [ -f "$TARBALL" ]; then
+              echo "Bundled browsers (tar.gz): $(du -sh "$TARBALL" | cut -f1)"
+            else
+              echo "WARNING: No bundled browsers"
+            fi
           fi
           du -sh "$SIDECAR"
 
