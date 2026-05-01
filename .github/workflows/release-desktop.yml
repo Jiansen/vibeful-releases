@@ -121,7 +121,6 @@ jobs:
           echo "Engine binary: $ENGINE_BIN ($(du -sh "$ENGINE_BIN" | cut -f1))"
           ls -la "$ENGINE_BIN"
 
-          # Copy to Tauri externalBin location
           mkdir -p ../desktop/src-tauri/binaries
           if [ "${{ runner.os }}" = "Windows" ]; then
             cp "$ENGINE_BIN" "../desktop/src-tauri/binaries/vibeful-engine-${{ matrix.engine-target }}.exe"
@@ -135,11 +134,14 @@ jobs:
         run: mkdir -p desktop/src-tauri/voice-bin
         shell: bash
 
-      - name: Force build.rs re-run to pick up sidecar resources
+      - name: Clean stale bundle (force Tauri to re-copy resources)
         shell: bash
         run: |
+          echo "==> Removing stale bundle directories to force fresh resource bundling"
+          find desktop/src-tauri/target -path "*/release/bundle" -type d -exec rm -rf {} + 2>/dev/null || true
           find desktop/src-tauri/target -name ".fingerprint" -path "*/vibeful*" -exec rm -rf {} + 2>/dev/null || true
           touch desktop/src-tauri/build.rs
+          echo "==> Clean complete"
 
       - name: TypeScript type check
         working-directory: desktop
@@ -153,14 +155,14 @@ jobs:
           NODE_BIN="$SIDECAR/node"
           [ -f "$SIDECAR/node.exe" ] && NODE_BIN="$SIDECAR/node.exe"
           if [ ! -f "$NODE_BIN" ]; then
-            echo "Node.js binary not found in sidecar"
+            echo "::error::Node.js binary not found in sidecar"
             exit 1
           fi
           echo "Node.js: $("$NODE_BIN" --version)"
           echo "Node.js arch: $("$NODE_BIN" -e "console.log(process.arch)")"
           MCP_CLI="$SIDECAR/node_modules/@playwright/mcp/cli.js"
           if [ ! -f "$MCP_CLI" ]; then
-            echo "Playwright MCP CLI not found"
+            echo "::error::Playwright MCP CLI not found"
             exit 1
           fi
           echo "Playwright MCP CLI: present"
@@ -172,7 +174,8 @@ jobs:
             if [ -f "$TARBALL" ]; then
               echo "Bundled browsers (tar.gz): $(du -sh "$TARBALL" | cut -f1)"
             else
-              echo "WARNING: No bundled browsers"
+              echo "::error::No bundled browsers found"
+              exit 1
             fi
           fi
           du -sh "$SIDECAR"
@@ -209,6 +212,7 @@ jobs:
       - name: Verify bundle size
         shell: bash
         run: |
+          set -eo pipefail
           echo "=== Bundle size verification ==="
           BUNDLE_DIR="desktop/src-tauri/target"
           if [ -n "${{ matrix.args }}" ]; then
@@ -218,12 +222,29 @@ jobs:
             BUNDLE_DIR="$BUNDLE_DIR/release/bundle"
           fi
           echo "Bundle directory: $BUNDLE_DIR"
-          du -sh "$BUNDLE_DIR" 2>/dev/null || echo "Bundle dir not found"
-          find "$BUNDLE_DIR" -maxdepth 2 -type f \( -name "*.dmg" -o -name "*.exe" -o -name "*.msi" -o -name "*.deb" -o -name "*.AppImage" \) 2>/dev/null | while read f; do
+          du -sh "$BUNDLE_DIR" 2>/dev/null || { echo "::error::Bundle dir not found"; exit 1; }
+
+          FAIL=0
+          while IFS= read -r f; do
             SIZE=$(du -sm "$f" | cut -f1)
-            echo "  $(basename $f): ${SIZE}MB"
+            echo "  $(basename "$f"): ${SIZE}MB"
             if [ "$SIZE" -lt 50 ]; then
-              echo "::error::Bundle $(basename $f) is only ${SIZE}MB — engine or sidecar likely missing!"
-              exit 1
+              echo "::error::Bundle $(basename "$f") is only ${SIZE}MB — engine or sidecar likely missing!"
+              FAIL=1
             fi
-          done
+          done < <(find "$BUNDLE_DIR" -maxdepth 2 -type f \( -name "*.dmg" -o -name "*.exe" -o -name "*.msi" -o -name "*.deb" -o -name "*.AppImage" \) 2>/dev/null)
+
+          if [ "$FAIL" -eq 1 ]; then
+            echo "=== Debugging: .app contents ==="
+            APP_DIR=$(find "$BUNDLE_DIR" -name "*.app" -type d | head -1)
+            if [ -n "$APP_DIR" ]; then
+              echo "Resources:"
+              ls -la "$APP_DIR/Contents/Resources/" 2>/dev/null || echo "  (not found)"
+              echo "Sidecar:"
+              ls -la "$APP_DIR/Contents/Resources/sidecar/" 2>/dev/null || echo "  (not found)"
+              echo "MacOS binaries:"
+              ls -la "$APP_DIR/Contents/MacOS/" 2>/dev/null || echo "  (not found)"
+            fi
+            exit 1
+          fi
+          echo "=== All bundles OK ==="
