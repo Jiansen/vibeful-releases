@@ -96,7 +96,8 @@ jobs:
         uses: swatinem/rust-cache@v2
         with:
           workspaces: "desktop/src-tauri -> target"
-          prefix-key: "v2-sidecar"
+          prefix-key: "v3-sidecar"
+          shared-key: ${{ matrix.label }}
 
       - name: Prepare voice-bin placeholder
         run: mkdir -p desktop/src-tauri/voice-bin
@@ -143,6 +144,7 @@ jobs:
             fi
           fi
           du -sh "$SIDECAR"
+          echo "==="
 
       - uses: tauri-apps/tauri-action@v0
         env:
@@ -169,3 +171,25 @@ jobs:
           prerelease: false
           includeUpdaterJson: true
           args: ${{ matrix.args }}
+
+      - name: Verify bundle size
+        shell: bash
+        run: |
+          echo "=== Bundle size verification ==="
+          BUNDLE_DIR="desktop/src-tauri/target"
+          if [ -n "${{ matrix.args }}" ]; then
+            TARGET=$(echo "${{ matrix.args }}" | sed 's/--target //')
+            BUNDLE_DIR="$BUNDLE_DIR/$TARGET/release/bundle"
+          else
+            BUNDLE_DIR="$BUNDLE_DIR/release/bundle"
+          fi
+          echo "Bundle directory: $BUNDLE_DIR"
+          du -sh "$BUNDLE_DIR" 2>/dev/null || echo "Bundle dir not found"
+          find "$BUNDLE_DIR" -maxdepth 2 -type f -name "*.dmg" -o -name "*.exe" -o -name "*.msi" -o -name "*.deb" -o -name "*.AppImage" -o -name "*.app" 2>/dev/null | while read f; do
+            SIZE=$(du -sm "$f" | cut -f1)
+            echo "  $f: ${SIZE}MB"
+            if [ "$SIZE" -lt 100 ]; then
+              echo "::error::Bundle $f is only ${SIZE}MB — sidecar likely missing!"
+              exit 1
+            fi
+          done
