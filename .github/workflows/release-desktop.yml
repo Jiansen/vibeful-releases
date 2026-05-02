@@ -100,7 +100,7 @@ jobs:
         uses: swatinem/rust-cache@v2
         with:
           workspaces: "desktop/src-tauri -> target\nengine -> target"
-          prefix-key: "v4-sidecar"
+          prefix-key: "v5-sidecar"
           shared-key: ${{ matrix.label }}
 
       - name: Build engine
@@ -134,14 +134,17 @@ jobs:
         run: mkdir -p desktop/src-tauri/voice-bin
         shell: bash
 
-      - name: Force build.rs re-run and clean stale bundles
+      - name: Force build.rs re-run (clean fingerprints + build outputs)
         shell: bash
         run: |
-          echo "==> Removing stale bundle directories to force fresh resource bundling"
-          find desktop/src-tauri/target -path "*/release/bundle" -type d -exec rm -rf {} + 2>/dev/null || true
-          find desktop/src-tauri/target -name ".fingerprint" -path "*/vibeful*" -exec rm -rf {} + 2>/dev/null || true
+          TD="desktop/src-tauri/target"
+          for DIR in "$TD/release" "$TD/aarch64-apple-darwin/release" "$TD/x86_64-apple-darwin/release"; do
+            rm -rf "$DIR/.fingerprint/vibeful"* 2>/dev/null || true
+            rm -rf "$DIR/build/vibeful"* 2>/dev/null || true
+            rm -rf "$DIR/bundle" 2>/dev/null || true
+          done
           touch desktop/src-tauri/build.rs
-          echo "==> Clean complete"
+          echo "Cleaned vibeful fingerprints + build outputs + stale bundles"
 
       - name: TypeScript type check
         working-directory: desktop
@@ -203,7 +206,7 @@ jobs:
             |----------|------|
             | macOS Apple Silicon (M1+) | `Vibeful_*_aarch64.dmg` |
             | macOS Intel | `Vibeful_*_x64.dmg` |
-            | Windows 64-bit | `Vibeful_*_x64-setup.exe` / `.msi` |
+            | Windows 64-bit | `Vibeful_*_x64-setup.exe` |
             | Linux (Debian/Ubuntu) | `Vibeful_*_amd64.deb` / `.AppImage` |
           releaseDraft: true
           prerelease: false
@@ -213,6 +216,8 @@ jobs:
       - name: Ensure sidecar in macOS .app bundle
         if: runner.os == 'macOS'
         shell: bash
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           TARGET=$(echo "${{ matrix.args }}" | sed 's/--target //')
           APP_DIR="desktop/src-tauri/target/$TARGET/release/bundle/macos/Vibeful.app"
@@ -250,6 +255,11 @@ jobs:
                   --sign "${{ secrets.APPLE_SIGNING_IDENTITY }}" "$DMG_FILE" || true
               fi
               echo "Re-created DMG: $(du -sh "$DMG_FILE" | cut -f1)"
+
+              echo "=== Re-uploading DMG to release ==="
+              gh release upload "${{ inputs.tag_name }}" "$DMG_FILE" --clobber \
+                --repo "${{ github.repository }}" || true
+              echo "Uploaded fixed DMG"
             fi
           fi
 
