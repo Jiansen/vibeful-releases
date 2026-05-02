@@ -146,9 +146,26 @@ jobs:
           touch desktop/src-tauri/build.rs
           echo "Cleaned vibeful fingerprints + build outputs + stale bundles"
 
+      - name: Verify version consistency
+        shell: bash
+        run: |
+          V_TAURI=$(python3 -c "import json; print(json.load(open('desktop/src-tauri/tauri.conf.json'))['version'])")
+          V_PKG=$(python3 -c "import json; print(json.load(open('desktop/package.json'))['version'])")
+          V_CARGO=$(grep '^version' desktop/src-tauri/Cargo.toml | head -1 | sed 's/version = "\(.*\)"/\1/')
+          echo "tauri.conf.json: $V_TAURI | package.json: $V_PKG | Cargo.toml: $V_CARGO"
+          if [ "$V_TAURI" != "$V_PKG" ] || [ "$V_TAURI" != "$V_CARGO" ]; then
+            echo "::error::Version mismatch! All files must agree."
+            exit 1
+          fi
+          echo "✓ All versions match: $V_TAURI"
+
       - name: TypeScript type check
         working-directory: desktop
         run: npx tsc --noEmit
+
+      - name: Frontend tests
+        working-directory: desktop
+        run: npx vitest run --reporter=verbose 2>&1 || echo "::warning::Some tests failed (non-blocking)"
 
       - name: Verify browser sidecar
         shell: bash
@@ -323,10 +340,26 @@ jobs:
           gh release upload "${{ inputs.tag_name }}" "/tmp/$ZIP_NAME" --clobber || true
           echo "Uploaded portable ZIP to release"
 
-      - name: Verify bundle size
+      - name: Verify bundle integrity
         shell: bash
         run: |
-          echo "=== Bundle size verification ==="
+          echo "=== Bundle integrity verification ==="
+          if [ "${{ runner.os }}" = "macOS" ]; then
+            APP_DIR=$(find desktop/src-tauri/target -path "*/release/bundle/macos/Vibeful.app" -type d 2>/dev/null | head -1)
+            if [ -z "$APP_DIR" ]; then
+              echo "::error::.app bundle not found"
+              exit 1
+            fi
+            echo "Checking: $APP_DIR"
+            CHECKS_OK=1
+            [ -d "$APP_DIR/Contents/MacOS" ] && echo "  ✓ MacOS/" || { echo "  ✗ MacOS/ MISSING"; CHECKS_OK=0; }
+            [ -f "$APP_DIR/Contents/Info.plist" ] && echo "  ✓ Info.plist" || echo "  ⚠ Info.plist missing"
+            [ -f "$APP_DIR/Contents/Resources/icon.icns" ] && echo "  ✓ icon.icns" || echo "  ⚠ icon.icns missing"
+            SIDECAR_SIZE=$(du -sm "$APP_DIR/Contents/Resources/sidecar" 2>/dev/null | cut -f1)
+            [ "${SIDECAR_SIZE:-0}" -gt 100 ] && echo "  ✓ sidecar/ (${SIDECAR_SIZE}MB)" || echo "  ⚠ sidecar/ small or missing (${SIDECAR_SIZE:-0}MB)"
+            [ "$CHECKS_OK" -eq 0 ] && exit 1
+          fi
+
           BUNDLE_DIR="desktop/src-tauri/target"
           if [ -n "${{ matrix.args }}" ]; then
             TARGET=$(echo "${{ matrix.args }}" | sed 's/--target //')
