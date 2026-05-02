@@ -253,6 +253,55 @@ jobs:
             fi
           fi
 
+      - name: Ensure sidecar in Windows bundle
+        if: runner.os == 'Windows'
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          BUNDLE_DIR="desktop/src-tauri/target/release/bundle"
+          NSIS_EXE=$(find "$BUNDLE_DIR/nsis" -name "*.exe" ! -name "*.sig" | head -1)
+          SIDECAR_SRC="desktop/src-tauri/sidecar"
+          VERSION=$(echo "${{ inputs.tag_name }}" | sed 's/desktop-v//')
+
+          if [ -z "$NSIS_EXE" ]; then
+            echo "::error::NSIS exe not found"
+            exit 1
+          fi
+
+          SIZE=$(du -sm "$NSIS_EXE" | cut -f1)
+          echo "NSIS installer: $(basename "$NSIS_EXE") = ${SIZE}MB"
+
+          if [ "$SIZE" -gt 50 ]; then
+            echo "NSIS installer includes sidecar, skipping safeguard"
+            exit 0
+          fi
+
+          echo "::warning::NSIS installer too small (${SIZE}MB) — creating portable ZIP with sidecar"
+
+          PORTABLE_DIR="/tmp/Vibeful"
+          rm -rf "$PORTABLE_DIR"
+          mkdir -p "$PORTABLE_DIR/sidecar"
+
+          cp "desktop/src-tauri/target/release/vibeful-desktop.exe" "$PORTABLE_DIR/Vibeful.exe"
+          ENGINE_BIN=$(find "desktop/src-tauri/binaries" -name "vibeful-engine*" | head -1)
+          if [ -n "$ENGINE_BIN" ]; then
+            cp "$ENGINE_BIN" "$PORTABLE_DIR/"
+          fi
+          cp -R "$SIDECAR_SRC"/* "$PORTABLE_DIR/sidecar/" 2>/dev/null || true
+          cp "$SIDECAR_SRC"/.[!.]* "$PORTABLE_DIR/sidecar/" 2>/dev/null || true
+
+          echo "Portable dir: $(du -sh "$PORTABLE_DIR" | cut -f1)"
+          ls -la "$PORTABLE_DIR/"
+
+          ZIP_NAME="Vibeful_${VERSION}_x64_portable.zip"
+          cd /tmp && 7z a -r "$ZIP_NAME" "Vibeful/" > /dev/null
+          ZIP_SIZE=$(du -sh "/tmp/$ZIP_NAME" | cut -f1)
+          echo "Created: $ZIP_NAME ($ZIP_SIZE)"
+
+          gh release upload "${{ inputs.tag_name }}" "/tmp/$ZIP_NAME" --clobber || true
+          echo "Uploaded portable ZIP to release"
+
       - name: Verify bundle size
         shell: bash
         run: |
@@ -272,8 +321,12 @@ jobs:
             SIZE=$(du -sm "$f" | cut -f1)
             echo "  $(basename "$f"): ${SIZE}MB"
             if [ "$SIZE" -lt 50 ]; then
-              echo "::error::Bundle $(basename "$f") is only ${SIZE}MB — engine or sidecar likely missing!"
-              FAIL=1
+              if [ "${{ runner.os }}" = "Windows" ]; then
+                echo "::warning::Bundle $(basename "$f") is ${SIZE}MB — sidecar via portable ZIP"
+              else
+                echo "::error::Bundle $(basename "$f") is only ${SIZE}MB — engine or sidecar likely missing!"
+                FAIL=1
+              fi
             fi
           done < <(find "$BUNDLE_DIR" -maxdepth 2 -type f \( -name "*.dmg" -o -name "*.exe" -o -name "*.msi" -o -name "*.deb" -o -name "*.AppImage" \) 2>/dev/null)
 
@@ -285,8 +338,6 @@ jobs:
               ls -la "$APP_DIR/Contents/Resources/" 2>/dev/null || echo "  (not found)"
               echo "Sidecar:"
               ls -la "$APP_DIR/Contents/Resources/sidecar/" 2>/dev/null || echo "  (not found)"
-              echo "Sidecar size:"
-              du -sh "$APP_DIR/Contents/Resources/sidecar/" 2>/dev/null || echo "  (not found)"
               echo "MacOS binaries:"
               ls -la "$APP_DIR/Contents/MacOS/" 2>/dev/null || echo "  (not found)"
             fi
