@@ -100,7 +100,7 @@ jobs:
         uses: swatinem/rust-cache@v2
         with:
           workspaces: "desktop/src-tauri -> target\nengine -> target"
-          prefix-key: "v3-sidecar"
+          prefix-key: "v4-sidecar"
           shared-key: ${{ matrix.label }}
 
       - name: Build engine
@@ -134,7 +134,7 @@ jobs:
         run: mkdir -p desktop/src-tauri/voice-bin
         shell: bash
 
-      - name: Clean stale bundle (force Tauri to re-copy resources)
+      - name: Force build.rs re-run and clean stale bundles
         shell: bash
         run: |
           echo "==> Removing stale bundle directories to force fresh resource bundling"
@@ -169,15 +169,16 @@ jobs:
           BROWSERS="$SIDECAR/.local-browsers"
           if [ -d "$BROWSERS" ]; then
             echo "Bundled browsers: $(du -sh "$BROWSERS" | cut -f1)"
+          elif [ -f "$SIDECAR/local-browsers.tar.gz" ]; then
+            echo "Bundled browsers (tar.gz): $(du -sh "$SIDECAR/local-browsers.tar.gz" | cut -f1)"
+          elif [ -f "$SIDECAR/.local-browsers.tar.gz" ]; then
+            echo "Bundled browsers (legacy tar.gz): $(du -sh "$SIDECAR/.local-browsers.tar.gz" | cut -f1)"
           else
-            TARBALL="$SIDECAR/.local-browsers.tar.gz"
-            if [ -f "$TARBALL" ]; then
-              echo "Bundled browsers (tar.gz): $(du -sh "$TARBALL" | cut -f1)"
-            else
-              echo "::error::No bundled browsers found"
-              exit 1
-            fi
+            echo "::error::No bundled browsers found"
+            exit 1
           fi
+          echo "=== Sidecar contents ==="
+          ls -la "$SIDECAR/"
           du -sh "$SIDECAR"
           echo "=== Engine binary verification ==="
           ls -la desktop/src-tauri/binaries/
@@ -209,10 +210,52 @@ jobs:
           includeUpdaterJson: true
           args: ${{ matrix.args }}
 
+      - name: Ensure sidecar in macOS .app bundle
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          TARGET=$(echo "${{ matrix.args }}" | sed 's/--target //')
+          APP_DIR="desktop/src-tauri/target/$TARGET/release/bundle/macos/Vibeful.app"
+          RESOURCES="$APP_DIR/Contents/Resources"
+          SIDECAR_SRC="desktop/src-tauri/sidecar"
+          SIDECAR_DST="$RESOURCES/sidecar"
+
+          echo "=== Checking .app bundle for sidecar ==="
+          if [ -d "$SIDECAR_DST" ] && [ "$(du -sm "$SIDECAR_DST" | cut -f1)" -gt 100 ]; then
+            echo "Sidecar present in .app bundle: $(du -sh "$SIDECAR_DST" | cut -f1)"
+          else
+            echo "::warning::Sidecar missing or too small in .app bundle — manually copying"
+            mkdir -p "$SIDECAR_DST"
+            cp -R "$SIDECAR_SRC"/* "$SIDECAR_DST/" 2>/dev/null || true
+            cp "$SIDECAR_SRC"/.[!.]* "$SIDECAR_DST/" 2>/dev/null || true
+            echo "Manually copied sidecar: $(du -sh "$SIDECAR_DST" | cut -f1)"
+
+            echo "=== Re-signing .app ==="
+            if [ -n "${{ secrets.APPLE_SIGNING_IDENTITY }}" ]; then
+              codesign --force --deep --options runtime --timestamp \
+                --sign "${{ secrets.APPLE_SIGNING_IDENTITY }}" "$APP_DIR" || true
+              echo "Re-signed .app bundle"
+            fi
+
+            echo "=== Re-creating DMG ==="
+            DMG_DIR="desktop/src-tauri/target/$TARGET/release/bundle/dmg"
+            DMG_FILE=$(find "$DMG_DIR" -name "*.dmg" | head -1)
+            if [ -n "$DMG_FILE" ]; then
+              DMG_NAME=$(basename "$DMG_FILE")
+              rm -f "$DMG_FILE"
+              hdiutil create -volname "Vibeful" -srcfolder "$APP_DIR" \
+                -ov -format UDZO "$DMG_FILE"
+              if [ -n "${{ secrets.APPLE_SIGNING_IDENTITY }}" ]; then
+                codesign --force --timestamp \
+                  --sign "${{ secrets.APPLE_SIGNING_IDENTITY }}" "$DMG_FILE" || true
+              fi
+              echo "Re-created DMG: $(du -sh "$DMG_FILE" | cut -f1)"
+            fi
+          fi
+
       - name: Verify bundle size
         shell: bash
         run: |
-          set -eo pipefail
           echo "=== Bundle size verification ==="
           BUNDLE_DIR="desktop/src-tauri/target"
           if [ -n "${{ matrix.args }}" ]; then
@@ -242,6 +285,8 @@ jobs:
               ls -la "$APP_DIR/Contents/Resources/" 2>/dev/null || echo "  (not found)"
               echo "Sidecar:"
               ls -la "$APP_DIR/Contents/Resources/sidecar/" 2>/dev/null || echo "  (not found)"
+              echo "Sidecar size:"
+              du -sh "$APP_DIR/Contents/Resources/sidecar/" 2>/dev/null || echo "  (not found)"
               echo "MacOS binaries:"
               ls -la "$APP_DIR/Contents/MacOS/" 2>/dev/null || echo "  (not found)"
             fi
