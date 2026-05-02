@@ -220,11 +220,23 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           TARGET=$(echo "${{ matrix.args }}" | sed 's/--target //')
-          APP_DIR="desktop/src-tauri/target/$TARGET/release/bundle/macos/Vibeful.app"
-          RESOURCES="$APP_DIR/Contents/Resources"
           SIDECAR_SRC="desktop/src-tauri/sidecar"
-          SIDECAR_DST="$RESOURCES/sidecar"
 
+          # Find the actual .app bundle (Tauri may place it in different paths)
+          APP_DIR=$(find desktop/src-tauri/target -path "*/release/bundle/macos/Vibeful.app" -type d 2>/dev/null | head -1)
+          if [ -z "$APP_DIR" ]; then
+            echo "::error::Vibeful.app not found in build output"
+            exit 1
+          fi
+          echo "Found .app at: $APP_DIR"
+
+          # Verify this is a real .app (has executable), not a skeleton
+          if [ ! -d "$APP_DIR/Contents/MacOS" ]; then
+            echo "::error::.app is missing Contents/MacOS — build likely failed"
+            exit 1
+          fi
+
+          SIDECAR_DST="$APP_DIR/Contents/Resources/sidecar"
           echo "=== Checking .app bundle for sidecar ==="
           if [ -d "$SIDECAR_DST" ] && [ "$(du -sm "$SIDECAR_DST" | cut -f1)" -gt 100 ]; then
             echo "Sidecar present in .app bundle: $(du -sh "$SIDECAR_DST" | cut -f1)"
@@ -246,7 +258,6 @@ jobs:
             DMG_DIR="desktop/src-tauri/target/$TARGET/release/bundle/dmg"
             DMG_FILE=$(find "$DMG_DIR" -name "*.dmg" | head -1)
             if [ -n "$DMG_FILE" ]; then
-              DMG_NAME=$(basename "$DMG_FILE")
               rm -f "$DMG_FILE"
               hdiutil create -volname "Vibeful" -srcfolder "$APP_DIR" \
                 -ov -format UDZO "$DMG_FILE"
