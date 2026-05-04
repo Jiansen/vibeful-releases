@@ -81,6 +81,9 @@ jobs:
           security set-key-partition-list -S apple-tool:,apple: -k "actions" $KEYCHAIN_PATH
           security list-keychain -d user -s $KEYCHAIN_PATH
 
+      - name: Inject version from tag
+        run: node scripts/set-version.js "${{ inputs.tag_name }}"
+
       - name: Install desktop deps
         working-directory: desktop
         run: npm install
