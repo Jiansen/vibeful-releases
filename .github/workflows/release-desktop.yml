@@ -110,13 +110,21 @@ jobs:
       - name: Verify Rust toolchain
         shell: bash
         run: |
-          if ! cargo --version 2>/dev/null; then
-            echo "::warning::cargo not found in PATH, re-installing toolchain"
+          CARGO_OUT=$(cargo --version 2>&1 || echo "not found")
+          if [[ "$CARGO_OUT" != cargo* ]]; then
+            echo "::warning::cargo binary is corrupted or missing (got: $CARGO_OUT), re-installing"
+            rm -f "$HOME/.cargo/bin/cargo" 2>/dev/null || true
             rustup default stable
-            rustup show
+            rustup update stable
+            hash -r
           fi
           echo "cargo: $(which cargo)"
           cargo --version
+          FINAL=$(cargo --version 2>&1)
+          if [[ "$FINAL" != cargo* ]]; then
+            echo "::error::cargo still broken after reinstall: $FINAL"
+            exit 1
+          fi
 
       - name: Build engine
         shell: bash
