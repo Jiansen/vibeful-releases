@@ -112,11 +112,10 @@ jobs:
         run: |
           CARGO_OUT=$(cargo --version 2>&1 || echo "not found")
           if [[ "$CARGO_OUT" != cargo* ]]; then
-            echo "::warning::cargo binary is corrupted or missing (got: $CARGO_OUT), re-installing"
-            rm -f "$HOME/.cargo/bin/cargo" 2>/dev/null || true
-            rustup default stable
-            rustup update stable
-            hash -r
+            echo "::warning::cargo binary is corrupted or missing (got: $CARGO_OUT), reinstalling from scratch"
+            rm -rf "$HOME/.cargo/bin/"*
+            curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- --default-toolchain stable -y
+            source "$HOME/.cargo/env"
           fi
           echo "cargo: $(which cargo)"
           cargo --version
